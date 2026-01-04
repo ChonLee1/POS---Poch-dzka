@@ -67,6 +67,38 @@ static void* net_thread(void* arg) {
     return NULL;
 }
 
+static void* sim_thread(void* arg) {
+    server_ctx_t* ctx = (server_ctx_t*)arg;
+
+    while (get_running(ctx)) {
+        // simulácia práce servera (napr. aktualizácia stavu hry)
+        
+        // aktualizuj stav (len príklad)
+        int32_t x, y;
+        uint32_t step;
+        pthread_mutex_lock(&ctx->mtx);
+        ctx->x += 1;
+        ctx->y += 1;
+        ctx->step += 1;
+        x = ctx->x;
+        y = ctx->y;
+        step = ctx->step;
+        pthread_mutex_unlock(&ctx->mtx);
+        
+        msg_state_t st = { .x = x, .y = y, .step = step };
+        
+        if (proto_send(ctx->client_fd, MSG_STATE, &st, sizeof(st)) != 0) {
+            fprintf(stderr, "[server] failed to send STATE\n");
+            set_running(ctx, 0);
+            break;
+        }
+    }
+    
+    sleep(200 * 1000); // 200 ms
+    
+    return NULL;
+}
+
 
 int server_run(uint16_t port) {
     // 1) listen
@@ -119,11 +151,15 @@ int server_run(uint16_t port) {
 
     // 5) spusti net_thread (blokuje na prijímaní)
     pthread_t tnet;
+    pthread_t tsim;
     pthread_create(&tnet, NULL, net_thread, &ctx);
-
+    pthread_create(&tsim, NULL, sim_thread, &ctx);
+    
+    
     // 6) čakaj, kým net_thread neskončí (napr. QUIT)
     pthread_join(tnet, NULL);
-
+    pthread_join(tsim, NULL);
+    
     // 7) cleanup
     set_running(&ctx, 0); // pre istotu
     pthread_mutex_destroy(&ctx.mtx);
@@ -132,4 +168,5 @@ int server_run(uint16_t port) {
     printf("[server] shutdown\n");
     return 0;
 }
+
 
