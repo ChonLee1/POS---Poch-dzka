@@ -1,11 +1,14 @@
-#include "net.h"
-#include "protocol.h"
+#include <net.h>
+#include <protocol.h>
+#include "client.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/socket.h>
 
 int main(int argc, char** argv) {
     const char* host = "127.0.0.1";
@@ -33,19 +36,23 @@ int main(int argc, char** argv) {
     }
     printf("[client] handshake OK\n");
 
+    client_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.fd = fd;
+    ctx.running = 1;
+    pthread_mutex_init(&ctx.mtx, NULL);
 
-    for (int i = 0; i < 20; i++) {
-    msg_type_t rt;
-    uint32_t rlen = 0;
-    msg_state_t st;
+    pthread_t trecv, tin;
+    pthread_create(&trecv, NULL, recv_thread, &ctx);
+    pthread_create(&tin, NULL, input_thread, &ctx);
 
-    if (proto_recv(fd, &rt, &st, (uint32_t)sizeof(st), &rlen) != 0) break;
-    if (rt != MSG_STATE || rlen != sizeof(st)) continue;
+    printf("[client] Press 'q' + Enter to quit\n");
 
-    printf("[client] step=%u pos=(%d,%d)\n", st.step, st.x, st.y);
-    }
+    pthread_join(tin, NULL);
+    pthread_join(trecv, NULL);
 
-    (void)proto_send(fd, MSG_QUIT, NULL, 0);
+    pthread_mutex_destroy(&ctx.mtx);
     close(fd);
+
     return 0;
 }
