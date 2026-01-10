@@ -1,16 +1,34 @@
 #include "server.h"
+#include "net.h"
+#include "protocol.h"
+
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <stdlib.h>
 
 typedef struct {
-    int client_fd;
-    int running;
+    int listen_fd;
+    int client_fd;           // -1 ak ziadny klient
+    int running;             // server bezi
+    int session_active;      // je aktivny klient session?
+    int sim_running;         // bezi simulacia?
+
     pthread_mutex_t mtx;
 
-    int32_t x, y;
-    uint32_t step;
-    int sim_running;
     int32_t width, height;
     uint32_t k_max;
+    uint32_t reps;
     uint32_t seed;
+
+    /* stav pre aktualnu replikaciu */
+    uint32_t cur_rep;
+    uint32_t step;
+    int32_t x, y;
 } server_ctx_t;
 
 static int get_running(server_ctx_t* ctx) {
@@ -27,42 +45,73 @@ static void set_running(server_ctx_t* ctx, int value) {
     pthread_mutex_unlock(&ctx->mtx);
 }
 
+/* random smer: 0=up 1=down 2=left 3=right */
+static void step_random(server_ctx_t* ctx) {
+    int dir = rand() % 4;
+
+    if (dir == 0) ctx->y -= 1;
+    else if (dir == 1) ctx->y += 1;
+    else if (dir == 2) ctx->x -= 1;
+    else ctx->x += 1;
+
+    /* wrap-around */
+    if (ctx->x < 0) ctx->x = ctx->width - 1;
+    if (ctx->y < 0) ctx->y = ctx->height - 1;
+    if (ctx->x >= ctx->width) ctx->x = 0;
+    if (ctx->y >= ctx->height) ctx->y = 0;
+}
+
 static void* net_thread(void* arg) {
     server_ctx_t* ctx = (server_ctx_t*)arg;
 
-    msg_type_t type;
-    uint32_t len = 0;
-
-    // buffer zatiaľ nepotrebujeme (QUIT nemá payload),
-    // ale proto_recv chce payload_buf, ak len > 0.
-    unsigned char buf[64];
+    unsigned char buf[256];
 
     while (get_running(ctx)) {
+        int fd;
+        pthread_mutex_lock(&ctx->mtx);
+        fd = ctx->client_fd;
+        pthread_mutex_unlock(&ctx->mtx);
 
-        // Čakaj na ďalšiu správu od klienta (blokuje)
-        if (proto_recv(ctx->client_fd, &type, buf, (uint32_t)sizeof(buf), &len) != 0) {
-            // klient sa odpojil alebo chyba v komunikácii
-            fprintf(stderr, "[server] proto_recv failed -> stopping\n");
-            set_running(ctx, 0);
+        if (fd < 0) {
+            nanosleep((const struct timespec[]){{0, 100000000}}, NULL); // 100ms
+            continue;
+        }
+
+        msg_type_t type;
+        uint32_t len = 0;
+
+        if (proto_recv(fd, &type, buf, (uint32_t)sizeof(buf), &len) != 0) {
+            fprintf(stderr, "[server] client disconnected\n");
+            pthread_mutex_lock(&ctx->mtx);
+            ctx->session_active = 0;
+            ctx->sim_running = 0;
             shutdown(ctx->client_fd, SHUT_RDWR);
+            close(ctx->client_fd);
+            ctx->client_fd = -1;
+            pthread_mutex_unlock(&ctx->mtx);
+            continue;
+        }
+
+        if (type == MSG_QUIT) {
+            printf("[server] got MSG_QUIT -> shutdown server\n");
+            set_running(ctx, 0);
+            pthread_mutex_lock(&ctx->mtx);
+            ctx->sim_running = 0;
+            if (ctx->client_fd >= 0) shutdown(ctx->client_fd, SHUT_RDWR);
+            pthread_mutex_unlock(&ctx->mtx);
             break;
         }
-        // Spracovanie typu správy
-        if (type == MSG_QUIT) {
-            printf("[server] got MSG_QUIT\n");
-            set_running(ctx, 0);
-            shutdown(ctx->client_fd, SHUT_RDWR);
-            break;
-        } else if (type == MSG_START) {
+
+        if (type == MSG_START) {
             if (len != sizeof(msg_start_t)) {
-                printf("[server] invalid MSG_START length %u\n", (unsigned)len);
+                printf("[server] invalid MSG_START len=%u\n", (unsigned)len);
                 continue;
             }
 
             msg_start_t s;
             memcpy(&s, buf, sizeof(s));
 
-            if (s.width <= 0 || s.height <= 0 || s.k_max == 0) {
+            if (s.width < 2 || s.height < 2 || s.k_max == 0 || s.reps == 0) {
                 printf("[server] invalid START params\n");
                 continue;
             }
@@ -71,180 +120,196 @@ static void* net_thread(void* arg) {
             ctx->width = s.width;
             ctx->height = s.height;
             ctx->k_max = s.k_max;
-            ctx->seed = s.seed;
+            ctx->reps = s.reps;
 
-            ctx->x = s.width / 2;
-            ctx->y = s.height / 2;
+            if (s.seed == 0) ctx->seed = (uint32_t)time(NULL);
+            else ctx->seed = s.seed;
+
+            ctx->cur_rep = 0;
             ctx->step = 0;
-
             ctx->sim_running = 1;
             pthread_mutex_unlock(&ctx->mtx);
 
-            printf("[server] simulation started (W=%d H=%d K=%u seed=%u)\n",
-                s.width, s.height, (unsigned)s.k_max, (unsigned)s.seed);
-        } else {
-            // neznámy typ správy - ignoruj
-            printf("[server] unknown msg type %u\n", (unsigned)type);
+            printf("[server] simulation started (W=%d H=%d K=%u reps=%u seed=%u)\n",
+                   s.width, s.height, (unsigned)s.k_max, (unsigned)s.reps, (unsigned)ctx->seed);
         }
     }
+
     return NULL;
 }
 
 static void* sim_thread(void* arg) {
     server_ctx_t* ctx = (server_ctx_t*)arg;
 
-    while (get_running(ctx)) {
+    int seeded = 0;
 
-        // 1) ak simulácia nie je spustená (neprišiel START), len čakaj
+    while (get_running(ctx)) {
+        int active, sim;
+        int fd;
+        int32_t w, h;
+        uint32_t kmax, reps, seed;
+
         pthread_mutex_lock(&ctx->mtx);
-        int sim = ctx->sim_running;
+        active = ctx->session_active;
+        sim = ctx->sim_running;
+        fd = ctx->client_fd;
+        w = ctx->width;
+        h = ctx->height;
+        kmax = ctx->k_max;
+        reps = ctx->reps;
+        seed = ctx->seed;
         pthread_mutex_unlock(&ctx->mtx);
 
-        if (!sim) {
-            nanosleep((const struct timespec[]){{0, 100000000}}, NULL); // 100 ms
+        if (!active || !sim || fd < 0) {
+            nanosleep((const struct timespec[]){{0, 100000000}}, NULL); // 100ms
             continue;
         }
 
-        // 2) načítaj si potrebné veci + sprav 1 krok (pod mutexom)
-        int32_t x, y, w, h;
-        uint32_t step, k_max;
-        uint32_t seed;
+        if (!seeded) {
+            srand((unsigned)seed);
+            seeded = 1;
+        }
+
+        /* sprav reps replikacii */
+        for (uint32_t rep = 1; rep <= reps && get_running(ctx); rep++) {
+            pthread_mutex_lock(&ctx->mtx);
+            if (!ctx->sim_running || ctx->client_fd < 0) {
+                pthread_mutex_unlock(&ctx->mtx);
+                break;
+            }
+            ctx->cur_rep = rep;
+            ctx->step = 0;
+
+            /* start pozicia – napr. pravy dolny roh */
+            ctx->x = w - 1;
+            ctx->y = h - 1;
+            pthread_mutex_unlock(&ctx->mtx);
+
+            /* max kmax krokov */
+            for (uint32_t step = 1; step <= kmax && get_running(ctx); step++) {
+                pthread_mutex_lock(&ctx->mtx);
+                if (!ctx->sim_running || ctx->client_fd < 0) {
+                    pthread_mutex_unlock(&ctx->mtx);
+                    break;
+                }
+
+                ctx->step = step;
+                step_random(ctx);
+
+                msg_state_t st;
+                st.rep = rep;
+                st.reps_total = reps;
+                st.step = step;
+                st.x = ctx->x;
+                st.y = ctx->y;
+
+                int cfd = ctx->client_fd;
+                pthread_mutex_unlock(&ctx->mtx);
+
+                if (proto_send(cfd, MSG_STATE, &st, (uint32_t)sizeof(st)) != 0) {
+                    fprintf(stderr, "[server] failed to send STATE\n");
+                    pthread_mutex_lock(&ctx->mtx);
+                    ctx->sim_running = 0;
+                    pthread_mutex_unlock(&ctx->mtx);
+                    break;
+                }
+
+                /* koniec replikacie: dosiahli sme (0,0) */
+                if (st.x == 0 && st.y == 0) break;
+
+                nanosleep((const struct timespec[]){{0, 100000000}}, NULL); // 100ms
+            }
+        }
+
+        /* simulacia hotova -> MSG_DONE */
+        pthread_mutex_lock(&ctx->mtx);
+        if (ctx->client_fd >= 0) {
+            int cfd = ctx->client_fd;
+            pthread_mutex_unlock(&ctx->mtx);
+            (void)proto_send(cfd, MSG_DONE, NULL, 0);
+        } else {
+            pthread_mutex_unlock(&ctx->mtx);
+        }
 
         pthread_mutex_lock(&ctx->mtx);
-
-        w = ctx->width;
-        h = ctx->height;
-        k_max = ctx->k_max;
-
-        // lokálna kópia seedu (rand_r potrebuje unsigned int*)
-        seed = ctx->seed;
-
-        x = ctx->x;
-        y = ctx->y;
-        step = ctx->step;
-
-        // random smer 0..3
-        unsigned int s = (unsigned int)seed;
-        int dir = (int)(rand_r(&s) % 4);
-        ctx->seed = (uint32_t)s; // ulož späť aktualizovaný seed
-
-        // pokus o pohyb
-        int32_t nx = x;
-        int32_t ny = y;
-
-        if (dir == 0) nx--;       // left
-        else if (dir == 1) nx++;  // right
-        else if (dir == 2) ny--;  // up
-        else ny++;                // down
-
-        // hranice sveta: ak mimo, ostaneme
-        if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
-            x = nx;
-            y = ny;
-            ctx->x = x;
-            ctx->y = y;
-        }
-
-        // krok sa ráta vždy (aj keď narazíš na hranicu) – najjednoduchšie
-        step++;
-        ctx->step = step;
-
-        // kontrola ukončenia simulácie
-        int finished = ((x == 0 && y == 0) || (step >= k_max));
-        if (finished) {
-            ctx->sim_running = 0;
-            printf("[server] simulation reached end condition\n");
-        }
-
+        ctx->sim_running = 0;
         pthread_mutex_unlock(&ctx->mtx);
 
-        // 3) pošli stav klientovi (už mimo mutexu)
-        msg_state_t st = { .x = x, .y = y, .step = step };
-
-        if (proto_send(ctx->client_fd, MSG_STATE, &st, (uint32_t)sizeof(st)) != 0) {
-            fprintf(stderr, "[server] failed to send STATE\n");
-            set_running(ctx, 0);
-            shutdown(ctx->client_fd, SHUT_RDWR);
-            break;
-        }
-
-        if (finished) {
-            printf("[server] simulation finished\n");
-        }
-
-        // 4) tempo simulácie
-        nanosleep((const struct timespec[]){{0, 500000000}}, NULL); // 0.5s
+        printf("[server] simulation finished\n");
     }
 
     return NULL;
 }
 
-
 int server_run(uint16_t port) {
-    // 1) listen
     int lfd = net_listen(port, 8);
     if (lfd < 0) {
         perror("net_listen");
         return 1;
     }
-    printf("[server] listening on %u...\n", (unsigned)port);
 
-    // 2) accept
-    int cfd = net_accept(lfd);
-    if (cfd < 0) {
-        perror("net_accept");
-        close(lfd);
-        return 1;
-    }
-    printf("[server] client connected\n");
-
-    // 3) handshake: očakávame MSG_HELLO
-    msg_type_t t;
-    char payload[64];
-    uint32_t len = 0;
-
-    if (proto_recv(cfd, &t, payload, (uint32_t)sizeof(payload), &len) != 0 || t != MSG_HELLO) {
-        fprintf(stderr, "[server] expected HELLO\n");
-        close(cfd);
-        close(lfd);
-        return 1;
-    }
-
-    // ukončenie stringu pre bezpečný výpis
-    payload[(len < sizeof(payload)) ? len : (sizeof(payload) - 1)] = 0;
-    printf("[server] HELLO payload: '%s'\n", payload);
-
-    if (proto_send(cfd, MSG_HELLO_ACK, NULL, 0) != 0) {
-        fprintf(stderr, "[server] failed to send HELLO_ACK\n");
-        close(cfd);
-        close(lfd);
-        return 1;
-    }
-    printf("[server] handshake OK\n");
-
-    // 4) init ctx
     server_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.client_fd = cfd;
+    ctx.listen_fd = lfd;
+    ctx.client_fd = -1;
     ctx.running = 1;
+    ctx.session_active = 0;
+    ctx.sim_running = 0;
     pthread_mutex_init(&ctx.mtx, NULL);
 
-    // 5) spusti net_thread (blokuje na prijímaní)
-    pthread_t tnet;
-    pthread_t tsim;
+    printf("[server] listening on %u...\n", (unsigned)port);
+
+    pthread_t tnet, tsim;
     pthread_create(&tnet, NULL, net_thread, &ctx);
     pthread_create(&tsim, NULL, sim_thread, &ctx);
-    
-    
-    // 6) čakaj, kým net_thread neskončí (napr. QUIT)
+
+    /* accept loop */
+    while (get_running(&ctx)) {
+        int cfd = net_accept(lfd);
+        if (cfd < 0) continue;
+
+        printf("[server] client connected\n");
+
+        /* handshake */
+        msg_type_t t;
+        char payload[64];
+        uint32_t len = 0;
+
+        if (proto_recv(cfd, &t, payload, (uint32_t)sizeof(payload), &len) != 0 || t != MSG_HELLO) {
+            fprintf(stderr, "[server] expected HELLO\n");
+            close(cfd);
+            continue;
+        }
+
+        payload[(len < sizeof(payload)) ? len : (sizeof(payload) - 1)] = 0;
+        printf("[server] HELLO payload: '%s'\n", payload);
+
+        if (proto_send(cfd, MSG_HELLO_ACK, NULL, 0) != 0) {
+            fprintf(stderr, "[server] failed to send HELLO_ACK\n");
+            close(cfd);
+            continue;
+        }
+        printf("[server] handshake OK\n");
+
+        pthread_mutex_lock(&ctx.mtx);
+        /* ak by bol stary klient, zavri ho */
+        if (ctx.client_fd >= 0) {
+            shutdown(ctx.client_fd, SHUT_RDWR);
+            close(ctx.client_fd);
+        }
+        ctx.client_fd = cfd;
+        ctx.session_active = 1;
+        ctx.sim_running = 0;
+        pthread_mutex_unlock(&ctx.mtx);
+    }
+
+    /* shutdown */
     pthread_join(tnet, NULL);
     pthread_join(tsim, NULL);
-    
-    // 7) cleanup
-    set_running(&ctx, 0); // pre istotu
+
     pthread_mutex_destroy(&ctx.mtx);
-    close(cfd);
     close(lfd);
+
     printf("[server] shutdown\n");
     return 0;
 }

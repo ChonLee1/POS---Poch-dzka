@@ -4,9 +4,11 @@
 typedef enum {
     MSG_HELLO = 1,
     MSG_HELLO_ACK = 2,
-    MSG_STATE = 3,
-    MSG_QUIT = 4,
-    MSG_START = 5
+
+    MSG_START = 3,   // klient -> server (parametre)
+    MSG_STATE = 4,   // server -> klient (stav)
+    MSG_DONE  = 5,   // server -> klient (koniec simulácie)
+    MSG_QUIT  = 6    // klient -> server (ukonči server)
 } msg_type_t;
 
 typedef struct __attribute__((packed)) {
@@ -18,12 +20,15 @@ typedef struct __attribute__((packed)) {
     int32_t x;
     int32_t y;
     uint32_t step;
+    uint32_t rep;       // aktuálna replikácia (1..reps)
+    uint32_t reps_total;
 } msg_state_t;
 
 typedef struct __attribute__((packed)) {
     int32_t width;     // šírka sveta (>=1)
     int32_t height;    // výška sveta (>=1)
     uint32_t k_max;    // max počet krokov
+     uint32_t reps;
     uint32_t seed;     // seed pre rand()
 } msg_start_t;
 
