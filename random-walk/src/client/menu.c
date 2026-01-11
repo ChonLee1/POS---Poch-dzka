@@ -1,5 +1,14 @@
 #include "menu.h"
 
+/**
+ * @brief Pomocná funkcia na prečítanie riadka zo standardného vstupu.
+ *
+ * Odstrani znak nového riadka (\n) z konca, ak sa nachádza.
+ *
+ * @param buf Buffer pre úloženie prečítaného riadka.
+ * @param cap Kapacita bufferu v bajtoch.
+ * @return 0 pri úspechu, -1 pri EOF alebo chybe.
+ */
 static int read_line(char* buf, size_t cap) {
     if (!fgets(buf, cap, stdin)) return -1;
     size_t n = strlen(buf);
@@ -17,6 +26,8 @@ int menu_read_choice(void) {
     fflush(stdout);
 
     if (read_line(line, sizeof(line)) != 0) return 3;
+    // Ak je prázdny vstup (len Enter), vráť 0 aby sa menu zobraziť znova bez chybovej správy
+    if (line[0] == 0) return 0;
     return atoi(line);
 }
 

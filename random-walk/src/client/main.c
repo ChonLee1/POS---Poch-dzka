@@ -1,3 +1,11 @@
+/**
+ * @file main.c
+ * @brief Vstupný bod klientskej aplikácie.
+ *
+ * Spúšťa TCP klienta, ktorý sa pripaja k serveru simulácie náhodnej prechádzky.
+ * Zobrazuje interaktívne menu pre nastavenie parametrov simulácie a prijem stavov.
+ */
+
 #include "client.h"
 #include "menu.h"
 #include "protocol.h"
@@ -9,6 +17,19 @@
 #include <string.h>
 #include <unistd.h>
 
+/**
+ * @brief Vstupný bod klientskej aplikácie.
+ *
+ * Spracúva argumenty príkazového riadka:
+ * - argv[1]: IP adresa alebo hostname servera (predvolené: 127.0.0.1)
+ * - argv[2]: Číslo portu servera (predvolené: 5555)
+ *
+ * Spúšťa vlákno pre príjem správ a hlavnú slučku s menu.
+ *
+ * @param argc Počet argumentov.
+ * @param argv Pole argumentov.
+ * @return Vždy vráti 0.
+ */
 int main(int argc, char** argv) {
     const char* host = "127.0.0.1";
     uint16_t port = 5555;
@@ -41,7 +62,10 @@ int main(int argc, char** argv) {
         
         int choice = menu_read_choice();
 
-        if (choice == 1) {
+        if (choice == 0) {
+            // Prázdny vstup (len Enter) - zobraz menu znova
+            continue;
+        } else if (choice == 1) {
             int w = menu_read_int("Sirka W", 2, 2000, 10);
             int h = menu_read_int("Vyska H", 2, 2000, 10);
             unsigned k = menu_read_uint("Max kroky K", 1, 1000000, 200);
@@ -52,10 +76,13 @@ int main(int argc, char** argv) {
             menu_read_dir_percents(&pu, &pd, &pl, &pr);
 
             /* spawn=1 -> vytvor server proces */
-            (void)client_start_simulation(&ctx, 1,
+            if (client_start_simulation(&ctx, 1,
                 (int32_t)w, (int32_t)h,
                 (uint32_t)k, (uint32_t)r,
-                (uint32_t)seed, pu, pd, pl, pr);
+                (uint32_t)seed, pu, pd, pl, pr) == 0) {
+                printf("\n[client] Simulacia spustena, stavy sa zobrazuju nizssie...\n");
+                printf("[client] Pockat kym dobehne, alebo pokracovat v menu.\n\n");
+            }
         } else if (choice == 2) {
             (void)client_connect_only(&ctx);
 

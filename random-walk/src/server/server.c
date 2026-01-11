@@ -1,27 +1,40 @@
 #include "server.h"
 
+/**
+ * @brief Kontext servera uchovávajúci stav spojenia, simulácie a vlákien.
+ *
+ * Táto štruktúra obsahuje všetky potrebné informácie pre serverový proces,
+ * vrátane socketov, stavu simulácie, parametrov náhodnej prechádzky a pozície.
+ * Prístup k zdieľaným údajom je chránený mutexom.
+ */
 typedef struct {
-    int listen_fd;
-    int client_fd;           // -1 ak ziadny klient
-    int running;             // server bezi
-    int session_active;      // je aktivny klient session?
-    int sim_running;         // bezi simulacia?
+    int listen_fd;           /**< File descriptor počúvajúceho socketu */
+    int client_fd;           /**< File descriptor klientského socketu (-1 ak žiadny klient) */
+    int running;             /**< Príznak, či server beží (1) alebo sa má ukončiť (0) */
+    int session_active;      /**< Príznak aktívneho klientského spojenia */
+    int sim_running;         /**< Príznak bežiacej simulácie */
 
-    pthread_mutex_t mtx;
+    pthread_mutex_t mtx;     /**< Mutex pre ochranu prístupu k zdieľaným údajom */
 
-    int32_t width, height;
-    uint32_t k_max;
-    uint32_t reps;
-    uint32_t seed;
+    int32_t width, height;   /**< Rozmery sveta (šírka × výška) */
+    uint32_t k_max;          /**< Maximálny počet krokov v jednej replikácii */
+    uint32_t reps;           /**< Celkový počet replikácií simulácie */
+    uint32_t seed;           /**< Seed pre generátor náhodných čísiel */
 
-    uint8_t p_up, p_down, p_left, p_right; // <<< DOPLŇENÉ
+    uint8_t p_up, p_down, p_left, p_right; /**< Pravdepodobnosti pohybu v percentách (súčet = 100) */
 
-    /* stav pre aktualnu replikaciu */
-    uint32_t cur_rep;
-    uint32_t step;
-    int32_t x, y;
+    /* stav pre aktuálnu replikáciu */
+    uint32_t cur_rep;        /**< Aktuálna replikácia (1..reps) */
+    uint32_t step;           /**< Aktuálny krok v replikácii */
+    int32_t x, y;            /**< Aktuálna pozícia v mriežke */
 } server_ctx_t;
 
+/**
+ * @brief Thread-safe získanie príznaku running.
+ *
+ * @param ctx Ukazovateľ na kontext servera.
+ * @return 1 ak server beží, 0 ak sa má ukončiť.
+ */
 static int get_running(server_ctx_t* ctx) {
     int r;
     pthread_mutex_lock(&ctx->mtx);
@@ -30,12 +43,28 @@ static int get_running(server_ctx_t* ctx) {
     return r;
 }
 
+/**
+ * @brief Thread-safe nastavenie príznaku running.
+ *
+ * @param ctx Ukazovateľ na kontext servera.
+ * @param value Nová hodnota príznaku (1 = bežiaci, 0 = ukončenie).
+ */
 static void set_running(server_ctx_t* ctx, int value) {
     pthread_mutex_lock(&ctx->mtx);
     ctx->running = value;
     pthread_mutex_unlock(&ctx->mtx);
 }
 
+/**
+ * @brief Zabalí celočíselnú hodnotu do rozsahu [0, maxv) s obalovaním.
+ *
+ * Implementuje toroidálnu topológiu - hodnoty mimo rozsahu sa zabalia na druhú stranu.
+ * Napríklad: wrap_i32(-1, 10) vráti 9, wrap_i32(10, 10) vráti 0.
+ *
+ * @param v Hodnota na zabalenie.
+ * @param maxv Horná hranica rozsahu (exkluzívna).
+ * @return Zabalená hodnota v rozsahu [0, maxv), alebo 0 ak maxv <= 0.
+ */
 static int wrap_i32(int v, int maxv) {
     if (maxv <= 0) return 0;
     v %= maxv;
@@ -43,7 +72,19 @@ static int wrap_i32(int v, int maxv) {
     return v;
 }
 
-// vráti 0=UP 1=DOWN 2=LEFT 3=RIGHT
+/**
+ * @brief Vyberie náhodný smer podľa zadaných pravdepodobností v percentách.
+ *
+ * Používa generátor náhodných čísiel rand_r() s pravdepodobnosťami pre každý smer.
+ * Pravdepodobnosti sú zadané v percentách a ich súčet by mal byť 100.
+ *
+ * @param rng Ukazovateľ na seed pre generátor náhodných čísiel (rand_r).
+ * @param p_up Pravdepodobnosť pohybu hore (%).
+ * @param p_down Pravdepodobnosť pohybu dole (%).
+ * @param p_left Pravdepodobnosť pohybu doľava (%).
+ * @param p_right Pravdepodobnosť pohybu doprava (%).
+ * @return 0=UP, 1=DOWN, 2=LEFT, 3=RIGHT
+ */
 static int pick_dir_percent(uint32_t* rng, uint8_t p_up, uint8_t p_down, uint8_t p_left, uint8_t p_right) {
     unsigned r = (unsigned)(rand_r(rng) % 100); // 0..99
 
@@ -61,7 +102,15 @@ static int pick_dir_percent(uint32_t* rng, uint8_t p_up, uint8_t p_down, uint8_t
     return 3;                 // RIGHT
 }
 
-/* random smer: 0=up 1=down 2=left 3=right */
+/**
+ * @brief Vykoná jeden krok náhodnej prechádzky podľa konfigurovaných pravdepodobností.
+ *
+ * Aktualizuje pozíciu (x, y) v kontexte servera o jeden krok v náhodne zvoleném smere.
+ * Smer je vybraný podľa pravdepodobností p_up, p_down, p_left, p_right.
+ * Pozícia je zabalená pomocou toroidálnej topológie (sveta).
+ *
+ * @param ctx Ukazovateľ na kontext servera obsahujúci pozíciu a parametre.
+ */
 static void step_random(server_ctx_t* ctx) {
     int d = pick_dir_percent(&ctx->seed, ctx->p_up, ctx->p_down, ctx->p_left, ctx->p_right);
 
@@ -80,7 +129,18 @@ static void step_random(server_ctx_t* ctx) {
     ctx->y = y;
 }
 
-
+/**
+ * @brief Vlákno pre príjem a spracovanie správ od klienta.
+ *
+ * Toto vlákno beží po celú dobu života servera a:
+ * - Čaká na správy od pripojeného klienta
+ * - Spracováva MSG_START (spustenie simulácie)
+ * - Spracováva MSG_QUIT (ukončenie servera)
+ * - Zatvára spojenie pri odpojení klienta
+ *
+ * @param arg Ukazovateľ na server_ctx_t štruktúru.
+ * @return NULL pri ukončení.
+ */
 static void* net_thread(void* arg) {
     server_ctx_t* ctx = (server_ctx_t*)arg;
 
@@ -178,6 +238,18 @@ static void* net_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * @brief Vlákno pre výpočet a vykonávanie simulácie náhodnej prechádzky.
+ *
+ * Vykonáva simuláciu v replikáciách:
+ * - Každá replikácia začína na pozícii (width-1, height-1)
+ * - Vykoná max k_max krokov alebo skončí pri dosiahnutí (0,0)
+ * - Posiela MSG_STATE klientovi po každom kroku
+ * - Po dokončení všetkých replikácií pošle MSG_DONE
+ *
+ * @param arg Ukazovateľ na server_ctx_t štruktúru.
+ * @return NULL pri ukončení.
+ */
 static void* sim_thread(void* arg) {
     server_ctx_t* ctx = (server_ctx_t*)arg;
 
@@ -275,6 +347,20 @@ static void* sim_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * @brief Hlavná funkcia servera - inicializuje server a spracováva pripojenia.
+ *
+ * Táto funkcia:
+ * - Vytvorí počúvajúci TCP socket na zadanom porte
+ * - Inicializuje kontext servera a spustí pomocné vlákna (net_thread, sim_thread)
+ * - Prijíma prichádzajúce klientske pripojenia
+ * - Vykonáva handshake protokol s klientmi
+ * - Podporuje iba jedného aktívneho klienta naraz (nový klient nahradí starý)
+ * - Beží až do prijatia MSG_QUIT
+ *
+ * @param port Číslo portu, na ktorom bude server počúvať.
+ * @return 0 pri úspešnom ukončení, 1 pri chybe.
+ */
 int server_run(uint16_t port) {
     int lfd = net_listen(port, 8);
     if (lfd < 0) {

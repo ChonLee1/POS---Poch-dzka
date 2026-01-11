@@ -1,7 +1,11 @@
 #include "client.h"
 
-/* ---------- helpers na thread-safe ctx ---------- */
-
+/**
+ * @brief Thread-safe získanie príznaku running.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @return 1 ak klient beží, 0 ak sa má ukončiť.
+ */
 static int get_running(client_ctx_t* ctx) {
     int r;
     pthread_mutex_lock(&ctx->mtx);
@@ -10,12 +14,24 @@ static int get_running(client_ctx_t* ctx) {
     return r;
 }
 
+/**
+ * @brief Thread-safe nastavenie príznaku running.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @param value Nová hodnota príznaku (1 = bežiaci, 0 = ukončenie).
+ */
 static void set_running(client_ctx_t* ctx, int value) {
     pthread_mutex_lock(&ctx->mtx);
     ctx->running = value;
     pthread_mutex_unlock(&ctx->mtx);
 }
 
+/**
+ * @brief Thread-safe získanie file descriptora socketu.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @return File descriptor socketu, alebo -1 ak nie je pripojený.
+ */
 static int ctx_get_fd(client_ctx_t* ctx) {
     int fd;
     pthread_mutex_lock(&ctx->mtx);
@@ -24,12 +40,25 @@ static int ctx_get_fd(client_ctx_t* ctx) {
     return fd;
 }
 
+/**
+ * @brief Thread-safe nastavenie file descriptora socketu.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @param fd Nový file descriptor socketu.
+ */
 static void ctx_set_fd(client_ctx_t* ctx, int fd) {
     pthread_mutex_lock(&ctx->mtx);
     ctx->fd = fd;
     pthread_mutex_unlock(&ctx->mtx);
 }
 
+/**
+ * @brief Thread-safe zatvorenie socketu.
+ *
+ * Bezpečne zatvorí socket a nastaví fd na -1.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ */
 static void ctx_close_fd(client_ctx_t* ctx) {
     int fd;
     pthread_mutex_lock(&ctx->mtx);
@@ -43,20 +72,23 @@ static void ctx_close_fd(client_ctx_t* ctx) {
     }
 }
 
+/**
+ * @brief Thread-safe nastavenie príznaku dokončenia simulácie.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @param v Nová hodnota príznaku (1 = dokončené, 0 = nie).
+ */
 static void ctx_set_done(client_ctx_t* ctx, int v) {
     pthread_mutex_lock(&ctx->mtx);
     ctx->simulation_done = v;
     pthread_mutex_unlock(&ctx->mtx);
 }
 
-// static int ctx_get_done(client_ctx_t* ctx) {
-//     int v;
-//     pthread_mutex_lock(&ctx->mtx);
-//     v = ctx->simulation_done;
-//     pthread_mutex_unlock(&ctx->mtx);
-//     return v;
-// }
-
+/**
+ * @brief Uspi vlákno na zadaný počet milisekúnd.
+ *
+ * @param ms Počet milisekúnd na spánok.
+ */
 static void sleep_ms(long ms) {
     struct timespec ts;
     ts.tv_sec = ms / 1000;
@@ -64,8 +96,14 @@ static void sleep_ms(long ms) {
     nanosleep(&ts, NULL);
 }
 
-/* ---------- spawn + connect + handshake ---------- */
-
+/**
+ * @brief Spustí serverový proces ako child proces.
+ *
+ * Použije fork() a execl() na spustenie ./bin/server s daným portom.
+ *
+ * @param port Číslo portu pre server.
+ * @return 0 pri úspechu, -1 pri chybe.
+ */
 static int spawn_server(uint16_t port) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -82,6 +120,15 @@ static int spawn_server(uint16_t port) {
     return 0;
 }
 
+/**
+ * @brief Pripojí sa k serveru a vykoná handshake protokol.
+ *
+ * Pošle MSG_HELLO a očakáva MSG_HELLO_ACK od servera.
+ *
+ * @param host IP adresa alebo hostname servera.
+ * @param port Číslo portu servera.
+ * @return File descriptor socketu pri úspechu, -1 pri chybe.
+ */
 static int connect_and_handshake(const char* host, uint16_t port) {
     int fd = net_connect(host, port);
     if (fd < 0) return -1;
@@ -102,8 +149,15 @@ static int connect_and_handshake(const char* host, uint16_t port) {
     return fd;
 }
 
-/* ---------- verejne API pre main ---------- */
-
+/**
+ * @brief Pripojí sa k serveru bez spúšťania simulácie.
+ *
+ * Pokiaľ je klient už pripojený, nevykoná nič.
+ * Inak sa pripojí k serveru a vykoná handshake.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @return 0 pri úspechu, -1 pri chybe.
+ */
 int client_connect_only(client_ctx_t* ctx) {
     if (ctx_get_fd(ctx) >= 0) {
         printf("[client] uz pripojeny.\n");
@@ -120,6 +174,27 @@ int client_connect_only(client_ctx_t* ctx) {
     return 0;
 }
 
+/**
+ * @brief Spustí simuláciu náhodnej prechádzky.
+ *
+ * Funkcia vykoná nasledujúce kroky:
+ * 1. Ak je spawn=1 a nie je pripojený, spustí serverový proces
+ * 2. Ak nie je pripojený, pripojí sa k serveru
+ * 3. Pošle MSG_START so všetkými parametrami simulácie
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @param spawn 1 ak má spustiť server ako child proces, 0 inak.
+ * @param w Šírka sveta.
+ * @param h Výška sveta.
+ * @param k Maximálny počet krokov na replikáciu.
+ * @param reps Počet replikácií.
+ * @param seed Seed pre generátor náhodných čísiel (0 = použiť aktuálny čas).
+ * @param p_up Pravdepodobnosť pohybu hore (%).
+ * @param p_down Pravdepodobnosť pohybu dole (%).
+ * @param p_left Pravdepodobnosť pohybu doľava (%).
+ * @param p_right Pravdepodobnosť pohybu doprava (%).
+ * @return 0 pri úspechu, -1 pri chybe.
+ */
 int client_start_simulation(client_ctx_t* ctx, int spawn,
                             int32_t w, int32_t h,
                             uint32_t k, uint32_t reps, uint32_t seed,
@@ -176,6 +251,12 @@ int client_start_simulation(client_ctx_t* ctx, int spawn,
     return 0;
 }
 
+/**
+ * @brief Pošle serveru príkaz na ukončenie a zatvorí spojenie.
+ *
+ * @param ctx Ukazovateľ na kontext klienta.
+ * @return Vždy vráti 0.
+ */
 int client_quit_server_and_close(client_ctx_t* ctx) {
     int fd = ctx_get_fd(ctx);
     if (fd >= 0) {
@@ -185,8 +266,17 @@ int client_quit_server_and_close(client_ctx_t* ctx) {
     return 0;
 }
 
-/* ---------- threads ---------- */
-
+/**
+ * @brief Vlákno pre príjem správ od servera.
+ *
+ * Toto vlákno beží po celú dobu života klienta a:
+ * - Prijíma správy MSG_STATE (stav simulácie) a vypisuje ich
+ * - Prijíma správu MSG_DONE (koniec simulácie)
+ * - Deteguje odpojenie servera
+ *
+ * @param arg Ukazovateľ na client_ctx_t štruktúru.
+ * @return NULL pri ukončení.
+ */
 void* recv_thread(void* arg) {
     client_ctx_t* ctx = (client_ctx_t*)arg;
 
@@ -224,6 +314,15 @@ void* recv_thread(void* arg) {
     return NULL;
 }
 
+/**
+ * @brief Vlákno pre spracovanie používateľského vstupu z terminu.
+ *
+ * Umožňuje používateľovi ukončiť klienta zadaním 'q'.
+ * Pri iných vstupoch informuje používateľa, aby použil hlavné menu.
+ *
+ * @param arg Ukazovateľ na client_ctx_t štruktúru.
+ * @return NULL pri ukončení.
+ */
 void* input_thread(void* arg) {
     client_ctx_t* ctx = (client_ctx_t*)arg;
     char line[64];
