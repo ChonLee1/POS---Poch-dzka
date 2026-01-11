@@ -16,6 +16,18 @@ static int read_line(char* buf, size_t cap) {
     return 0;
 }
 
+/**
+ * @brief Zobrazí hlavné menu a prečíta voľbu používateľa.
+ *
+ * Menu ponúka:
+ * 1 - Spustenie novej simulácie (server + START)
+ * 2 - Pripojenie sa k existujúcej simulácii
+ * 3 - Ukončenie aplikácie
+ *
+ * Prázdny vstup (iba Enter) vráti 0 a zobrazí menu znova.
+ *
+ * @return Číslo zvolenej voľby (0-3) alebo 3 pri EOF.
+ */
 int menu_read_choice(void) {
     char line[64];
     printf("\n=== MENU ===\n");
@@ -26,11 +38,24 @@ int menu_read_choice(void) {
     fflush(stdout);
 
     if (read_line(line, sizeof(line)) != 0) return 3;
-    // Ak je prázdny vstup (len Enter), vráť 0 aby sa menu zobraziť znova bez chybovej správy
+    /* Ak je prázdny vstup (len Enter), vráť 0 aby sa menu zobraziť znova bez chybovej správy */
     if (line[0] == 0) return 0;
     return atoi(line);
 }
 
+/**
+ * @brief Číta celočíselnú hodnotu z vstupu s overením rozsahu.
+ *
+ * Pokračuje v čítaní, kým používateľ nezadá platnú hodnotu
+ * v špecifikovanom rozsahu [minv, maxv].
+ * Prázdny vstup (Enter) vráti predvolenenú hodnotu.
+ *
+ * @param prompt Text výzvy na zobrazenie.
+ * @param minv Minimálna prípustná hodnota (vrátane).
+ * @param maxv Maximálna prípustná hodnota (vrátane).
+ * @param def Predvolená hodnota pri prázdnom vstupe.
+ * @return Prečítaná a overená celočíselná hodnota.
+ */
 int menu_read_int(const char* prompt, int minv, int maxv, int def) {
     char line[128];
     for (;;) {
@@ -55,6 +80,17 @@ int menu_read_int(const char* prompt, int minv, int maxv, int def) {
     }
 }
 
+/**
+ * @brief Číta pravdepodobnosti pohybu v štyroch smeroch.
+ *
+ * Opakuje vstup, kým suma všetkých pravdepodobností nebudú 100%.
+ * Každý smer sa číta ako hodnota 0-100.
+ *
+ * @param up Ukazovateľ na výstupnú hodnotu pre pohyb hore (UP).
+ * @param down Ukazovateľ na výstupnú hodnotu pre pohyb dole (DOWN).
+ * @param left Ukazovateľ na výstupnú hodnotu pre pohyb vľavo (LEFT).
+ * @param right Ukazovateľ na výstupnú hodnotu pre pohyb vpravo (RIGHT).
+ */
 void menu_read_dir_percents(uint8_t* up, uint8_t* down, uint8_t* left, uint8_t* right) {
     for (;;) {
         unsigned u = menu_read_uint("Percent hore (UP)", 0, 100, 25);
@@ -76,6 +112,19 @@ void menu_read_dir_percents(uint8_t* up, uint8_t* down, uint8_t* left, uint8_t* 
     }
 }
 
+/**
+ * @brief Číta kladnú celočíselnú hodnotu z vstupu s overením rozsahu.
+ *
+ * Pokračuje v čítaní, kým používateľ nezadá platnú hodnotu
+ * v špecifikovanom rozsahu [minv, maxv].
+ * Prázdny vstup (Enter) vráti predvolenenú hodnotu.
+ *
+ * @param prompt Text výzvy na zobrazenie.
+ * @param minv Minimálna prípustná hodnota (vrátane).
+ * @param maxv Maximálna prípustná hodnota (vrátane).
+ * @param def Predvolená hodnota pri prázdnom vstupe.
+ * @return Prečítaná a overená kladná celočíselná hodnota.
+ */
 unsigned menu_read_uint(const char* prompt, unsigned minv, unsigned maxv, unsigned def) {
     char line[128];
     for (;;) {

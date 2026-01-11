@@ -1,4 +1,5 @@
 #include "server.h"
+#include "results.h"
 
 /**
  * @brief Kontext servera uchovávajúci stav spojenia, simulácie a vlákien.
@@ -27,6 +28,7 @@ typedef struct {
     uint32_t cur_rep;        /**< Aktuálna replikácia (1..reps) */
     uint32_t step;           /**< Aktuálny krok v replikácii */
     int32_t x, y;            /**< Aktuálna pozícia v mriežke */
+    results_t results;       /**< Štatistiky výsledkov simulácie */
 } server_ctx_t;
 
 /**
@@ -54,7 +56,6 @@ static void set_running(server_ctx_t* ctx, int value) {
     ctx->running = value;
     pthread_mutex_unlock(&ctx->mtx);
 }
-
 /**
  * @brief Zabalí celočíselnú hodnotu do rozsahu [0, maxv) s obalovaním.
  *
@@ -227,6 +228,11 @@ static void* net_thread(void* arg) {
             ctx->y = 0;
 
             ctx->sim_running = 1;
+            /* resetni a nastav parametre pre výsledky */
+            results_reset(&ctx->results);
+            results_set_params(&ctx->results, ctx->width, ctx->height, ctx->k_max,
+                               ctx->p_up, ctx->p_down, ctx->p_left, ctx->p_right,
+                               ctx->reps);
             pthread_mutex_unlock(&ctx->mtx);
 
             printf("[server] simulation started (W=%d H=%d K=%u reps=%u seed=%u) percents U=%u D=%u L=%u R=%u\n", 
@@ -284,9 +290,9 @@ static void* sim_thread(void* arg) {
             ctx->cur_rep = rep;
             ctx->step = 0;
 
-            /* start pozicia – napr. pravy dolny roh */
-            ctx->x = w - 1;
-            ctx->y = h - 1;
+            /* start pozicia – stred plochy */
+            ctx->x = w / 2;
+            ctx->y = h / 2;
             pthread_mutex_unlock(&ctx->mtx);
 
             /* max kmax krokov */
@@ -325,9 +331,23 @@ static void* sim_thread(void* arg) {
 
                 nanosleep((const struct timespec[]){{0, 100000000}}, NULL); // 100ms
             }
+
+            /* po replikácii zaznamenaj výsledok */
+            uint32_t steps_snapshot;
+            int32_t x_snapshot, y_snapshot;
+            pthread_mutex_lock(&ctx->mtx);
+            steps_snapshot = ctx->step;
+            x_snapshot = ctx->x;
+            y_snapshot = ctx->y;
+            pthread_mutex_unlock(&ctx->mtx);
+
+            int success = (x_snapshot == 0 && y_snapshot == 0) ? 1 : 0;
+            results_record_rep(&ctx->results, steps_snapshot, success);
         }
 
         /* simulacia hotova -> MSG_DONE */
+        /* simulacia hotova -> vytlač štatistiky a pošli MSG_DONE */
+        results_print(&ctx->results);
         pthread_mutex_lock(&ctx->mtx);
         if (ctx->client_fd >= 0) {
             int cfd = ctx->client_fd;

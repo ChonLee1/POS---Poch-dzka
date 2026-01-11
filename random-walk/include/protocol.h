@@ -61,6 +61,27 @@ typedef struct __attribute__((packed)) {
     uint8_t  p_right;    /**< Pravdepodobnosť pohybu doprava (%) */
 } msg_start_t;
 
+typedef struct __attribute__((packed)) {
+    uint32_t reps_total;
+
+    uint32_t success_count;   // koľko replikácií došlo na (0,0)
+    uint32_t fail_count;      // reps_total - success_count
+
+    uint64_t sum_steps_success; // súčet krokov len pre úspešné replikácie
+    uint32_t min_steps;         // min krokov medzi úspešnými
+    uint32_t max_steps;         // max krokov medzi úspešnými
+
+    // jednoduchý histogram krokov (úspešné replikácie)
+    // 0: 0-20, 1: 21-50, 2: 51-100, 3: 101+
+    uint32_t bins[4];
+
+    // voliteľné – echo vstupných parametrov (na obhajobu super)
+    int32_t  width;
+    int32_t  height;
+    uint32_t k_max;
+    uint8_t  p_up, p_down, p_left, p_right;
+} msg_result_t;
+
 /**
  * @brief Odošle správu cez socket.
  *
