@@ -1,10 +1,5 @@
 #include "menu.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-
 static int read_line(char* buf, size_t cap) {
     if (!fgets(buf, cap, stdin)) return -1;
     size_t n = strlen(buf);
@@ -49,6 +44,27 @@ int menu_read_int(const char* prompt, int minv, int maxv, int def) {
     }
 }
 
+void menu_read_dir_percents(uint8_t* up, uint8_t* down, uint8_t* left, uint8_t* right) {
+    for (;;) {
+        unsigned u = menu_read_uint("Percent hore (UP)", 0, 100, 25);
+        unsigned d = menu_read_uint("Percent dole (DOWN)", 0, 100, 25);
+        unsigned l = menu_read_uint("Percent vlavo (LEFT)", 0, 100, 25);
+        unsigned r = menu_read_uint("Percent vpravo (RIGHT)", 0, 100, 25);
+
+        unsigned sum = u + d + l + r;
+        if (sum != 100) {
+            printf("Chyba: sucet percent musi byt 100 (teraz %u). Skus znova.\n", sum);
+            continue;
+        }
+
+        *up = (uint8_t)u;
+        *down = (uint8_t)d;
+        *left = (uint8_t)l;
+        *right = (uint8_t)r;
+        return;
+    }
+}
+
 unsigned menu_read_uint(const char* prompt, unsigned minv, unsigned maxv, unsigned def) {
     char line[128];
     for (;;) {
@@ -72,3 +88,4 @@ unsigned menu_read_uint(const char* prompt, unsigned minv, unsigned maxv, unsign
         return (unsigned)v;
     }
 }
+

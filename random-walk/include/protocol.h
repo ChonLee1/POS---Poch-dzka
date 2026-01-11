@@ -1,5 +1,7 @@
 #pragma once
 #include <stdint.h>
+#include "net.h"
+#include <arpa/inet.h>   // htonl(), ntohl()
 
 typedef enum {
     MSG_HELLO = 1,
@@ -30,6 +32,11 @@ typedef struct __attribute__((packed)) {
     uint32_t k_max;    // max počet krokov
      uint32_t reps;
     uint32_t seed;     // seed pre rand()
+
+    uint8_t  p_up;
+    uint8_t  p_down;
+    uint8_t  p_left;
+    uint8_t  p_right;
 } msg_start_t;
 
 int proto_send(int fd, msg_type_t type, const void* payload, uint32_t len);

@@ -1,15 +1,4 @@
 #include "server.h"
-#include "net.h"
-#include "protocol.h"
-
-#include <pthread.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <time.h>
-#include <stdlib.h>
 
 typedef struct {
     int listen_fd;
@@ -24,6 +13,8 @@ typedef struct {
     uint32_t k_max;
     uint32_t reps;
     uint32_t seed;
+
+    uint8_t p_up, p_down, p_left, p_right; // <<< DOPLŇENÉ
 
     /* stav pre aktualnu replikaciu */
     uint32_t cur_rep;
@@ -45,21 +36,50 @@ static void set_running(server_ctx_t* ctx, int value) {
     pthread_mutex_unlock(&ctx->mtx);
 }
 
+static int wrap_i32(int v, int maxv) {
+    if (maxv <= 0) return 0;
+    v %= maxv;
+    if (v < 0) v += maxv;
+    return v;
+}
+
+// vráti 0=UP 1=DOWN 2=LEFT 3=RIGHT
+static int pick_dir_percent(uint32_t* rng, uint8_t p_up, uint8_t p_down, uint8_t p_left, uint8_t p_right) {
+    unsigned r = (unsigned)(rand_r(rng) % 100); // 0..99
+
+    unsigned a = (unsigned)p_up;
+    unsigned b = a + (unsigned)p_down;
+    unsigned c = b + (unsigned)p_left;
+    unsigned d = c + (unsigned)p_right; // malo by byt 100
+
+    // pre istotu, keby prišlo niečo zlé (aj keď server to validuje)
+    if (d == 0) return 3;
+
+    if (r < a) return 0;      // UP
+    if (r < b) return 1;      // DOWN
+    if (r < c) return 2;      // LEFT
+    return 3;                 // RIGHT
+}
+
 /* random smer: 0=up 1=down 2=left 3=right */
 static void step_random(server_ctx_t* ctx) {
-    int dir = rand() % 4;
+    int d = pick_dir_percent(&ctx->seed, ctx->p_up, ctx->p_down, ctx->p_left, ctx->p_right);
 
-    if (dir == 0) ctx->y -= 1;
-    else if (dir == 1) ctx->y += 1;
-    else if (dir == 2) ctx->x -= 1;
-    else ctx->x += 1;
+    int32_t x = ctx->x;
+    int32_t y = ctx->y;
 
-    /* wrap-around */
-    if (ctx->x < 0) ctx->x = ctx->width - 1;
-    if (ctx->y < 0) ctx->y = ctx->height - 1;
-    if (ctx->x >= ctx->width) ctx->x = 0;
-    if (ctx->y >= ctx->height) ctx->y = 0;
+    if (d == 0) y -= 1;        // UP
+    else if (d == 1) y += 1;   // DOWN
+    else if (d == 2) x -= 1;   // LEFT
+    else x += 1;               // RIGHT
+
+    x = wrap_i32(x, ctx->width);
+    y = wrap_i32(y, ctx->height);
+
+    ctx->x = x;
+    ctx->y = y;
 }
+
 
 static void* net_thread(void* arg) {
     server_ctx_t* ctx = (server_ctx_t*)arg;
@@ -98,6 +118,11 @@ static void* net_thread(void* arg) {
             pthread_mutex_lock(&ctx->mtx);
             ctx->sim_running = 0;
             if (ctx->client_fd >= 0) shutdown(ctx->client_fd, SHUT_RDWR);
+            /* Shutdown listen socket aby accept() prestal blokovat */
+            if (ctx->listen_fd >= 0) {
+                shutdown(ctx->listen_fd, SHUT_RDWR);
+                close(ctx->listen_fd);
+            }
             pthread_mutex_unlock(&ctx->mtx);
             break;
         }
@@ -116,22 +141,37 @@ static void* net_thread(void* arg) {
                 continue;
             }
 
+            unsigned psum = (unsigned)s.p_up + (unsigned)s.p_down + (unsigned)s.p_left + (unsigned)s.p_right;
+            if (psum != 100) {
+                printf("[server] invalid START percents sum=%u (must be 100)\n", psum);
+                continue;
+            }
+
             pthread_mutex_lock(&ctx->mtx);
             ctx->width = s.width;
             ctx->height = s.height;
             ctx->k_max = s.k_max;
             ctx->reps = s.reps;
 
+            ctx->p_up = s.p_up;
+            ctx->p_down = s.p_down;
+            ctx->p_left = s.p_left;
+            ctx->p_right = s.p_right;
+
             if (s.seed == 0) ctx->seed = (uint32_t)time(NULL);
             else ctx->seed = s.seed;
 
             ctx->cur_rep = 0;
             ctx->step = 0;
+            ctx->x = 0;
+            ctx->y = 0;
+
             ctx->sim_running = 1;
             pthread_mutex_unlock(&ctx->mtx);
 
-            printf("[server] simulation started (W=%d H=%d K=%u reps=%u seed=%u)\n",
-                   s.width, s.height, (unsigned)s.k_max, (unsigned)s.reps, (unsigned)ctx->seed);
+            printf("[server] simulation started (W=%d H=%d K=%u reps=%u seed=%u) percents U=%u D=%u L=%u R=%u\n", 
+                s.width, s.height, (unsigned)s.k_max, (unsigned)s.reps, (unsigned)ctx->seed,
+                (unsigned)s.p_up, (unsigned)s.p_down, (unsigned)s.p_left, (unsigned)s.p_right);
         }
     }
 
@@ -141,13 +181,11 @@ static void* net_thread(void* arg) {
 static void* sim_thread(void* arg) {
     server_ctx_t* ctx = (server_ctx_t*)arg;
 
-    int seeded = 0;
-
     while (get_running(ctx)) {
         int active, sim;
         int fd;
         int32_t w, h;
-        uint32_t kmax, reps, seed;
+        uint32_t kmax, reps;
 
         pthread_mutex_lock(&ctx->mtx);
         active = ctx->session_active;
@@ -157,17 +195,11 @@ static void* sim_thread(void* arg) {
         h = ctx->height;
         kmax = ctx->k_max;
         reps = ctx->reps;
-        seed = ctx->seed;
         pthread_mutex_unlock(&ctx->mtx);
 
         if (!active || !sim || fd < 0) {
             nanosleep((const struct timespec[]){{0, 100000000}}, NULL); // 100ms
             continue;
-        }
-
-        if (!seeded) {
-            srand((unsigned)seed);
-            seeded = 1;
         }
 
         /* sprav reps replikacii */
@@ -194,6 +226,8 @@ static void* sim_thread(void* arg) {
                 }
 
                 ctx->step = step;
+
+                // TU: pohyb podľa percent
                 step_random(ctx);
 
                 msg_state_t st;
@@ -266,7 +300,11 @@ int server_run(uint16_t port) {
     /* accept loop */
     while (get_running(&ctx)) {
         int cfd = net_accept(lfd);
-        if (cfd < 0) continue;
+        if (cfd < 0) {
+            /* accept() failed - pravdepodobne server shutting down */
+            if (!get_running(&ctx)) break;
+            continue;
+        }
 
         printf("[server] client connected\n");
 
@@ -308,7 +346,7 @@ int server_run(uint16_t port) {
     pthread_join(tsim, NULL);
 
     pthread_mutex_destroy(&ctx.mtx);
-    close(lfd);
+    if (lfd >= 0) close(lfd);  // moze byt uz zavrety z net_thread
 
     printf("[server] shutdown\n");
     return 0;

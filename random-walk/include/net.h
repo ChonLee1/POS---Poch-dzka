@@ -1,7 +1,11 @@
 #pragma once
-#include <stddef.h>
-#include <stdint.h>
-
+#include <netdb.h>       // getaddrinfo(), freeaddrinfo(), struct addrinfo
+#include <sys/socket.h>  // socket(), bind(), listen(), accept(), connect(), send(), recv(), setsockopt()
+#include <arpa/inet.h>   // htons(), htonl(), inet_pton(), INADDR_ANY
+#include <unistd.h>      // close()
+#include <string.h>      // memset()
+#include <stdio.h>       // snprintf()
+#include <errno.h>       // errno, EINTR
 /**
  * @brief Vytvorí TCP serverový socket a začne počúvať na zadanom porte.
  *

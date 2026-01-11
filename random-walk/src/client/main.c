@@ -1,5 +1,6 @@
 #include "client.h"
 #include "menu.h"
+#include "protocol.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -47,9 +48,14 @@ int main(int argc, char** argv) {
             unsigned r = menu_read_uint("Replikacie R", 1, 1000000, 5);
             unsigned seed = menu_read_uint("Seed (0=auto)", 0, 0xFFFFFFFFu, 0);
 
-            /* spawn=1 -> vytvor server proces */
-            (void)client_start_simulation(&ctx, 1, (int32_t)w, (int32_t)h, (uint32_t)k, (uint32_t)r, (uint32_t)seed);
+            uint8_t pu, pd, pl, pr;
+            menu_read_dir_percents(&pu, &pd, &pl, &pr);
 
+            /* spawn=1 -> vytvor server proces */
+            (void)client_start_simulation(&ctx, 1,
+                (int32_t)w, (int32_t)h,
+                (uint32_t)k, (uint32_t)r,
+                (uint32_t)seed, pu, pd, pl, pr);
         } else if (choice == 2) {
             (void)client_connect_only(&ctx);
 

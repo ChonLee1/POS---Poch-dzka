@@ -1,6 +1,5 @@
 #include "client.h"
 
-
 /* ---------- helpers na thread-safe ctx ---------- */
 
 static int get_running(client_ctx_t* ctx) {
@@ -123,7 +122,8 @@ int client_connect_only(client_ctx_t* ctx) {
 
 int client_start_simulation(client_ctx_t* ctx, int spawn,
                             int32_t w, int32_t h,
-                            uint32_t k, uint32_t reps, uint32_t seed) {
+                            uint32_t k, uint32_t reps, uint32_t seed,
+                            uint8_t p_up, uint8_t p_down, uint8_t p_left, uint8_t p_right) {
     /* 1) ak treba, spusti server */
     if (spawn && ctx_get_fd(ctx) < 0) {
         if (spawn_server(ctx->port) != 0) {
@@ -157,6 +157,10 @@ int client_start_simulation(client_ctx_t* ctx, int spawn,
     s.k_max  = k;
     s.reps   = reps;
     s.seed   = seed;
+    s.p_up   = p_up;
+    s.p_down = p_down;
+    s.p_left = p_left;
+    s.p_right = p_right;
 
     int fd2 = ctx_get_fd(ctx);
     if (proto_send(fd2, MSG_START, &s, (uint32_t)sizeof(s)) != 0) {

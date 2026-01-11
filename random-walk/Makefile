@@ -9,7 +9,8 @@ CC=gcc
 # -O2                 -> optimalizácia
 # -Iinclude           -> kde hľadať naše vlastné hlavičky (.h)
 # -D_POSIX_C_SOURCE=200112L -> sprístupní POSIX funkcie/typy (napr. getaddrinfo, struct addrinfo)
-CFLAGS=-std=c11 -Wall -Wextra -Werror -pedantic -O2 -Iinclude -D_POSIX_C_SOURCE=200112L
+# -g                  -> debug symboly (pre valgrind, gdb)
+CFLAGS=-std=c11 -Wall -Wextra -Werror -pedantic -O2 -g -Iinclude -D_POSIX_C_SOURCE=200112L
 
 # LDFLAGS = prepínače pre linkovanie:
 # -pthread -> zapne podporu pthread (vlákna) a správne nalinkuje knižnice
@@ -45,6 +46,14 @@ server: $(COMMON_SRC) $(SERVER_SRC)
 # Build client:
 client: $(COMMON_SRC) $(CLIENT_SRC)
 	$(CC) $(CFLAGS) $^ -o $(BIN)/client $(LDFLAGS)
+
+# Valgrind server
+valgrind-server: server
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(BIN)/server 5555
+
+# Valgrind client
+valgrind-client: client
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(BIN)/client 127.0.0.1 5555
 
 # Vyčistenie build artefaktov
 clean:

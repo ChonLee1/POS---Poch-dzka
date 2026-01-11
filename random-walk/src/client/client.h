@@ -1,5 +1,4 @@
 #pragma once
-#include "client.h"
 #include "net.h"
 #include "protocol.h"
 
@@ -32,5 +31,6 @@ void* input_thread(void* arg);
 int client_connect_only(client_ctx_t* ctx);                 // connect + handshake
 int client_start_simulation(client_ctx_t* ctx, int spawn,   // spawn? 1/0
                             int32_t w, int32_t h,
-                            uint32_t k, uint32_t reps, uint32_t seed);
+                            uint32_t k, uint32_t reps, uint32_t seed,
+                            uint8_t p_up, uint8_t p_down, uint8_t p_left, uint8_t p_right);
 int client_quit_server_and_close(client_ctx_t* ctx);       

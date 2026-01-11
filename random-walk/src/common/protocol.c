@@ -1,7 +1,5 @@
 #include "protocol.h"
-#include "net.h"
 
-#include <arpa/inet.h>   // htonl(), ntohl()
 
 /**
  * @brief Odošle jednu správu protokolu cez socket.
