@@ -23,11 +23,10 @@ BIN=bin
 COMMON_SRC=src/common/net.c src/common/protocol.c
 
 # Zdrojáky servera
-SERVER_SRC=src/server/main.c src/server/server.c src/server/simulation.c \
-           src/server/world.c src/server/config.c src/server/results.c
+SERVER_SRC=src/server/main.c src/server/server.c src/server/results.c
 
 # Zdrojáky klienta
-CLIENT_SRC=src/client/main.c src/client/client.c src/client/menu.c src/client/render.c
+CLIENT_SRC=src/client/main.c src/client/client.c src/client/menu.c
 
 # Default target (spustí sa keď dáš len "make"):
 # Najprv vytvorí priečinky, potom zbuildí server aj klienta
